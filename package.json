@@ -1,7 +1,7 @@
 {
-  "name": "sword-duel-3d",
+  "name": "neon-arena-3d",
   "version": "1.0.0",
-  "description": "Online 3D sword duel game backend for Telegram bot",
+  "description": "Online multiplayer 3D neon arena shooter backend for Telegram bot",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
