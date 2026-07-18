@@ -1,6 +1,7 @@
-// سرور دوئل سه‌بعدی آنلاین
+// Neon Arena — online multiplayer shooter backend
 // Node.js + Express + Socket.io
-// این سرور بازیکن‌ها را دو به دو جفت می‌کند و حرکت/ضربه‌هایشان را بین‌شان رد و بدل می‌کند.
+// Handles lobby matchmaking (2-8 players per room), position/aim relay, and
+// server-validated hit/damage/kill tracking.
 
 const express = require('express');
 const http = require('http');
@@ -15,85 +16,150 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// صف انتظار برای جفت‌سازی
-let waitingPlayer = null;
+const MIN_PLAYERS = 2;
+const MAX_PLAYERS = 8;
+const LOBBY_WAIT_MS = 6000; // grace window to let more players join once min is reached
 
-// اتاق‌های فعال: roomId -> { players: [socketId, socketId], hp: {id:hp} }
-const rooms = new Map();
+// 8 spawn points around a ring
+const SPAWN_POINTS = Array.from({ length: MAX_PLAYERS }, (_, i) => {
+  const angle = (i / MAX_PLAYERS) * Math.PI * 2;
+  return { x: Math.cos(angle) * 11, z: Math.sin(angle) * 11 };
+});
+
+const PALETTE = ['#3ee6d0', '#e23e6b', '#e2b83e', '#8a5ce2', '#3ea6e2', '#e2653e', '#5ce28a', '#e23ee0'];
+
+let lobby = []; // array of sockets waiting
+let lobbyTimer = null;
+
+const rooms = new Map(); // roomId -> { players: Map(id -> {name,hp,alive,kills,color,spawnIndex}), alive: Set }
 
 function makeRoomId() {
   return 'r_' + Math.random().toString(36).slice(2, 9);
 }
 
-io.on('connection', (socket) => {
-  console.log('connected', socket.id);
+function startLobbyCountdown() {
+  if (lobbyTimer) return;
+  broadcastLobby();
+  lobbyTimer = setTimeout(finalizeLobby, LOBBY_WAIT_MS);
+}
 
+function broadcastLobby() {
+  lobby.forEach(s => {
+    s.emit('lobbyUpdate', {
+      count: lobby.length,
+      max: MAX_PLAYERS,
+      names: lobby.map(p => p.data.name)
+    });
+  });
+}
+
+function finalizeLobby() {
+  lobbyTimer = null;
+  if (lobby.length < MIN_PLAYERS) return; // not enough players, keep waiting
+
+  const participants = lobby.splice(0, MAX_PLAYERS);
+  const roomId = makeRoomId();
+  const players = new Map();
+
+  participants.forEach((s, i) => {
+    s.join(roomId);
+    s.data.roomId = roomId;
+    players.set(s.id, {
+      name: s.data.name,
+      hp: 100,
+      alive: true,
+      kills: 0,
+      color: PALETTE[i % PALETTE.length],
+      spawnIndex: i
+    });
+  });
+
+  rooms.set(roomId, { players });
+
+  participants.forEach(s => {
+    s.emit('matchFound', {
+      roomId,
+      selfId: s.id,
+      players: Array.from(players.entries()).map(([id, p]) => ({
+        id, name: p.name, color: p.color, spawnIndex: p.spawnIndex, hp: p.hp
+      })),
+      spawnPoints: SPAWN_POINTS
+    });
+  });
+
+  // if leftover players still waiting, keep the lobby loop going
+  if (lobby.length >= MIN_PLAYERS) startLobbyCountdown();
+}
+
+function checkRoundEnd(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const aliveIds = Array.from(room.players.entries()).filter(([, p]) => p.alive).map(([id]) => id);
+  if (aliveIds.length <= 1) {
+    io.to(roomId).emit('matchOver', {
+      winnerId: aliveIds[0] || null,
+      scores: Array.from(room.players.entries()).map(([id, p]) => ({ id, name: p.name, kills: p.kills }))
+    });
+  }
+}
+
+io.on('connection', (socket) => {
   socket.data.roomId = null;
+  socket.data.name = 'Player';
 
   socket.on('findMatch', (payload) => {
-    socket.data.name = (payload && payload.name) ? String(payload.name).slice(0, 20) : 'Player';
-
-    if (waitingPlayer && waitingPlayer.connected && waitingPlayer.id !== socket.id) {
-      const roomId = makeRoomId();
-      const p1 = waitingPlayer;
-      const p2 = socket;
-
-      p1.join(roomId);
-      p2.join(roomId);
-      p1.data.roomId = roomId;
-      p2.data.roomId = roomId;
-
-      rooms.set(roomId, {
-        players: [p1.id, p2.id],
-        hp: { [p1.id]: 100, [p2.id]: 100 }
-      });
-
-      p1.emit('matchFound', { roomId, side: 'p1', opponentName: p2.data.name, selfName: p1.data.name });
-      p2.emit('matchFound', { roomId, side: 'p2', opponentName: p1.data.name, selfName: p2.data.name });
-
-      waitingPlayer = null;
-    } else {
-      waitingPlayer = socket;
-      socket.emit('waiting');
-    }
+    socket.data.name = (payload && payload.name) ? String(payload.name).slice(0, 16) : 'Player';
+    if (lobby.find(s => s.id === socket.id)) return;
+    if (lobby.length >= MAX_PLAYERS) return;
+    lobby.push(socket);
+    socket.emit('waiting');
+    broadcastLobby();
+    if (lobby.length >= MIN_PLAYERS) startLobbyCountdown();
+    if (lobby.length >= MAX_PLAYERS) finalizeLobby();
   });
 
   socket.on('cancelFind', () => {
-    if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
+    lobby = lobby.filter(s => s.id !== socket.id);
+    if (lobby.length < MIN_PLAYERS && lobbyTimer) {
+      clearTimeout(lobbyTimer);
+      lobbyTimer = null;
+    }
+    broadcastLobby();
   });
 
-  // حرکت/چرخش بازیکن - فقط برای حریف در همون اتاق پخش میشه
+  // position/rotation relay
   socket.on('state', (data) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    socket.to(roomId).emit('opponentState', data);
+    socket.to(roomId).emit('opponentState', { id: socket.id, ...data });
   });
 
-  // رویداد حمله
-  socket.on('attack', () => {
+  // visual-only tracer relay (server does not use this for damage)
+  socket.on('shoot', (data) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    socket.to(roomId).emit('opponentAttack');
+    socket.to(roomId).emit('opponentShoot', { id: socket.id, ...data });
   });
 
-  // اعلام برخورد (کلاینت مهاجم تشخیص میده و به سرور میگه ضربه خورده یا نه)
-  // هدف همیشه «بازیکن دیگر همان اتاق» است، نه چیزی که کلاینت مشخص کند (برای جلوگیری از تقلب ساده)
-  socket.on('hit', ({ damage, blocked }) => {
+  // server-validated hit
+  socket.on('hit', ({ targetId, damage }) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
-    const targetId = room.players.find(id => id !== socket.id);
-    if (!targetId || !room.hp.hasOwnProperty(targetId)) return;
+    const target = room.players.get(targetId);
+    const shooter = room.players.get(socket.id);
+    if (!target || !shooter || !target.alive || targetId === socket.id) return;
 
-    if (!blocked) {
-      room.hp[targetId] = Math.max(0, room.hp[targetId] - damage);
-    }
+    const dmg = Math.max(0, Math.min(100, Number(damage) || 0));
+    target.hp = Math.max(0, target.hp - dmg);
+    io.to(roomId).emit('hpUpdate', { targetId, hp: target.hp });
 
-    io.to(roomId).emit('hpUpdate', { targetId, hp: room.hp[targetId], blocked });
-
-    if (room.hp[targetId] <= 0) {
-      io.to(roomId).emit('roundOver', { loserId: targetId });
+    if (target.hp <= 0 && target.alive) {
+      target.alive = false;
+      shooter.kills += 1;
+      io.to(roomId).emit('playerDown', { targetId, killerId: socket.id, killerName: shooter.name });
+      checkRoundEnd(roomId);
     }
   });
 
@@ -102,24 +168,41 @@ io.on('connection', (socket) => {
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
-    room.hp[room.players[0]] = 100;
-    room.hp[room.players[1]] = 100;
-    io.to(roomId).emit('rematchStart');
+    room.players.forEach(p => { p.hp = 100; p.alive = true; p.kills = 0; });
+    io.to(roomId).emit('rematchStart', {
+      players: Array.from(room.players.entries()).map(([id, p]) => ({
+        id, name: p.name, color: p.color, spawnIndex: p.spawnIndex, hp: p.hp
+      })),
+      spawnPoints: SPAWN_POINTS
+    });
   });
 
   socket.on('disconnect', () => {
-    console.log('disconnected', socket.id);
-    if (waitingPlayer && waitingPlayer.id === socket.id) waitingPlayer = null;
+    lobby = lobby.filter(s => s.id !== socket.id);
+    if (lobby.length < MIN_PLAYERS && lobbyTimer) {
+      clearTimeout(lobbyTimer);
+      lobbyTimer = null;
+    }
 
     const roomId = socket.data.roomId;
     if (roomId) {
-      socket.to(roomId).emit('opponentLeft');
-      rooms.delete(roomId);
+      const room = rooms.get(roomId);
+      if (room) {
+        const p = room.players.get(socket.id);
+        if (p) p.alive = false;
+        room.players.delete(socket.id);
+        socket.to(roomId).emit('opponentLeft', { id: socket.id });
+        if (room.players.size === 0) {
+          rooms.delete(roomId);
+        } else {
+          checkRoundEnd(roomId);
+        }
+      }
     }
   });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log('Sword Duel 3D server running on port ' + PORT);
+  console.log('Neon Arena server running on port ' + PORT);
 });
