@@ -226,7 +226,7 @@
     const torsoMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.6 });
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xe8c9a0, roughness:0.7 });
 
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.9, 4, 8), torsoMat);
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.9, 8), torsoMat);
     torso.position.y = 1.05;
     torso.castShadow = true;
     group.add(torso);
