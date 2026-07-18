@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>دوئل سه‌بعدی آنلاین</title>
+<style>
+  :root{
+    --dusk1:#150f1c; --sand:#e8d9b5; --p1:#e2574c; --p2:#4c9ee2; --gold:#d9a441; --bone:#f2ece0;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{ margin:0; padding:0; height:100%; overflow:hidden; background:var(--dusk1);
+    font-family:'Segoe UI', Tahoma, sans-serif; color:var(--bone); touch-action:none; user-select:none; }
+  #stage{ position:relative; width:100%; height:100%; }
+  canvas{ display:block; }
+
+  .hud{ position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between; align-items:center;
+    padding:16px 18px; pointer-events:none; z-index:5;}
+  .bar-wrap{ width:38%; } .bar-wrap.p2{ direction:ltr; }
+  .name{ font-size:12px; letter-spacing:.1em; margin-bottom:6px; color:var(--sand); opacity:.9;}
+  .bar-bg{ height:12px; border-radius:8px; background:rgba(255,255,255,0.08); overflow:hidden; border:1px solid rgba(255,255,255,0.12);}
+  .bar-fill{ height:100%; border-radius:8px; transition:width .18s ease; }
+  .p1 .bar-fill{ background:linear-gradient(90deg,var(--p1),#f28b7c); }
+  .p2 .bar-fill{ background:linear-gradient(90deg,#7cc0f2,var(--p2)); margin-left:auto; }
+  .status{ text-align:center; font-size:12px; color:var(--gold); letter-spacing:.1em;}
+
+  .overlay{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; background:rgba(20,14,22,0.85); backdrop-filter: blur(6px); transition:opacity .3s ease; z-index:10;}
+  .overlay.hidden{ opacity:0; pointer-events:none; }
+  h1{ font-size:26px; margin:0 0 10px; font-weight:800;
+      background:linear-gradient(90deg,var(--p1),var(--gold),var(--p2));
+      -webkit-background-clip:text; background-clip:text; color:transparent; }
+  p.sub{ margin:0 0 20px; color:var(--sand); font-size:13.5px; max-width:300px; line-height:1.9; opacity:.9;}
+  input{ font-size:15px; padding:12px 16px; border-radius:10px; border:1px solid rgba(255,255,255,.2);
+    background:rgba(255,255,255,.06); color:var(--bone); margin-bottom:16px; width:220px; text-align:center;}
+  button{ font-family:inherit; font-size:16px; font-weight:700; padding:14px 40px; border-radius:999px; border:none;
+    cursor:pointer; background:linear-gradient(135deg, var(--gold), #b9822f); color:#241705;
+    box-shadow:0 8px 24px rgba(217,164,65,.3); }
+  button:active{ transform:scale(.96);}
+  button:disabled{ opacity:.5; }
+  .spinner{ width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.15);
+    border-top-color:var(--gold); animation:spin 1s linear infinite; margin-bottom:16px;}
+  @keyframes spin{ to{transform:rotate(360deg);} }
+
+  .touchpad{ position:absolute; bottom:0; left:0; right:0; display:none; justify-content:space-between; padding:16px; z-index:5;}
+  .touchpad.active{ display:flex; }
+  .tgroup{ display:flex; gap:10px; align-items:flex-end; }
+  .tbtn{ width:60px; height:60px; border-radius:50%; background:rgba(255,255,255,0.08);
+    border:1px solid rgba(255,255,255,0.15); color:var(--bone); font-size:19px; display:flex;
+    align-items:center; justify-content:center; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="hud">
+    <div class="bar-wrap p1">
+      <div class="name" id="nameP1">تو</div>
+      <div class="bar-bg"><div class="bar-fill" id="hp1" style="width:100%"></div></div>
+    </div>
+    <div class="status" id="statusText"></div>
+    <div class="bar-wrap p2">
+      <div class="name" id="nameP2">حریف</div>
+      <div class="bar-bg"><div class="bar-fill" id="hp2" style="width:100%"></div></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="menuOverlay">
+    <h1>دوئل سه‌بعدی آنلاین</h1>
+    <p class="sub">با یک کاربر دیگه از ربات بجنگ. اسمت رو بنویس و دنبال حریف بگرد.</p>
+    <input id="nameInput" placeholder="اسمت رو بنویس" maxlength="16">
+    <button id="findBtn">پیدا کردن حریف</button>
+  </div>
+
+  <div class="overlay hidden" id="waitOverlay">
+    <div class="spinner"></div>
+    <p class="sub">در حال پیدا کردن حریف...</p>
+    <button id="cancelBtn">لغو</button>
+  </div>
+
+  <div class="overlay hidden" id="endOverlay">
+    <h1 id="endTitle">پایان</h1>
+    <button id="rematchBtn">بازی دوباره</button>
+  </div>
+
+  <div class="touchpad" id="touchpad">
+    <div class="tgroup">
+      <div class="tbtn" id="tleft">◀</div>
+      <div class="tbtn" id="tright">▶</div>
+    </div>
+    <div class="tgroup">
+      <div class="tbtn" id="tblock">🛡</div>
+      <div class="tbtn" id="tatk">⚔</div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+  // ---------- UI refs ----------
+  const menuOverlay = document.getElementById('menuOverlay');
+  const waitOverlay = document.getElementById('waitOverlay');
+  const endOverlay = document.getElementById('endOverlay');
+  const endTitle = document.getElementById('endTitle');
+  const findBtn = document.getElementById('findBtn');
+  const cancelBtn = document.getElementById('cancelBtn');
+  const rematchBtn = document.getElementById('rematchBtn');
+  const nameInput = document.getElementById('nameInput');
+  const nameP1 = document.getElementById('nameP1');
+  const nameP2 = document.getElementById('nameP2');
+  const hp1El = document.getElementById('hp1');
+  const hp2El = document.getElementById('hp2');
+  const statusText = document.getElementById('statusText');
+  const touchpad = document.getElementById('touchpad');
+  if('ontouchstart' in window) touchpad.classList.add('active');
+
+  try{
+    if(window.Telegram && window.Telegram.WebApp){
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+      const tgUser = window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.user;
+      if(tgUser && tgUser.first_name) nameInput.value = tgUser.first_name;
+    }
+  }catch(e){}
+
+  // ---------- Three.js scene ----------
+  const stage = document.getElementById('stage');
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1220);
+  scene.fog = new THREE.Fog(0x1a1220, 12, 30);
+
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 100);
+  const renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.shadowMap.enabled = true;
+  stage.appendChild(renderer.domElement);
+
+  window.addEventListener('resize', ()=>{
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // lights
+  const hemi = new THREE.HemisphereLight(0x8888ff, 0x201018, 0.55);
+  scene.add(hemi);
+  const moon = new THREE.DirectionalLight(0xcbd0ff, 1.1);
+  moon.position.set(-8, 12, 6);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(1024,1024);
+  scene.add(moon);
+
+  // arena floor
+  const floorGeo = new THREE.CylinderGeometry(9, 9, 0.4, 48);
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x241a2c, roughness:0.9 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.position.y = -0.2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  const ringGeo = new THREE.TorusGeometry(9, 0.08, 8, 64);
+  const ringMat = new THREE.MeshStandardMaterial({ color:0xd9a441, emissive:0x6b4c14 });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = Math.PI/2;
+  ring.position.y = 0.02;
+  scene.add(ring);
+
+  // backdrop moon sphere
+  const moonSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(2,24,24),
+    new THREE.MeshBasicMaterial({ color:0xf2ece0 })
+  );
+  moonSphere.position.set(-14, 10, -18);
+  scene.add(moonSphere);
+
+  function makeFighter(colorHex){
+    const group = new THREE.Group();
+
+    const torsoMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.6 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe8c9a0, roughness:0.7 });
+
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.9, 4, 8), torsoMat);
+    torso.position.y = 1.05;
+    torso.castShadow = true;
+    group.add(torso);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 16), skinMat);
+    head.position.y = 1.75;
+    head.castShadow = true;
+    group.add(head);
+
+    // arm pivot for sword swing
+    const armPivot = new THREE.Group();
+    armPivot.position.set(0.42, 1.35, 0);
+    group.add(armPivot);
+
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,0.55,8), skinMat);
+    arm.rotation.z = Math.PI/2;
+    arm.position.x = 0.27;
+    armPivot.add(arm);
+
+    const swordGroup = new THREE.Group();
+    swordGroup.position.x = 0.55;
+    armPivot.add(swordGroup);
+
+    const blade = new THREE.Mesh(
+      new THREE.BoxGeometry(1.15, 0.06, 0.14),
+      new THREE.MeshStandardMaterial({ color:0xf2ece0, metalness:0.6, roughness:0.25, emissive:0x222222 })
+    );
+    blade.position.x = 0.55;
+    blade.castShadow = true;
+    swordGroup.add(blade);
+
+    const hilt = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06,0.22,0.06),
+      new THREE.MeshStandardMaterial({ color:0x8a6a2f })
+    );
+    hilt.position.x = -0.05;
+    swordGroup.add(hilt);
+
+    group.userData.armPivot = armPivot;
+    group.userData.torso = torso;
+    return group;
+  }
+
+  const meFighter = makeFighter(0xe2574c);
+  const oppFighter = makeFighter(0x4c9ee2);
+  scene.add(meFighter);
+  scene.add(oppFighter);
+
+  // ---------- Game state ----------
+  let socket = null;
+  let mySide = null; // 'p1' or 'p2'
+  let roomActive = false;
+  let myHP = 100, oppHP = 100;
+  let myId = null, opponentIdCache = null;
+
+  const SPAWN = { p1: new THREE.Vector3(0,0,3.2), p2: new THREE.Vector3(0,0,-3.2) };
+  const me = { x:0, z:3.2, facing: -1, attacking:0, blocking:false, hitstun:0 };
+  const opp = { x:0, z:-3.2, facing: 1, attacking:0, blocking:false, targetX:0, targetZ:-3.2, targetFacing:1 };
+
+  const ATTACK_TOTAL = 22, ATTACK_WINDUP = 8, ATTACK_ACTIVE = 6, RANGE = 1.7;
+  let hitThisSwing = false;
+
+  const keys = {};
+  window.addEventListener('keydown', e=>{ keys[e.key]=true; });
+  window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+  const touchState = { left:false, right:false, block:false };
+  function bindHold(el, on, off){
+    el.addEventListener('touchstart', e=>{e.preventDefault(); on();}, {passive:false});
+    el.addEventListener('touchend', e=>{e.preventDefault(); off();}, {passive:false});
+    el.addEventListener('mousedown', on);
+    el.addEventListener('mouseup', off);
+  }
+  bindHold(document.getElementById('tleft'), ()=>touchState.left=true, ()=>touchState.left=false);
+  bindHold(document.getElementById('tright'), ()=>touchState.right=true, ()=>touchState.right=false);
+  bindHold(document.getElementById('tblock'), ()=>touchState.block=true, ()=>touchState.block=false);
+  document.getElementById('tatk').addEventListener('touchstart', e=>{e.preventDefault(); tryAttack();});
+  document.getElementById('tatk').addEventListener('mousedown', ()=>tryAttack());
+
+  let attackCooldown = 0;
+  function tryAttack(){
+    if(!roomActive) return;
+    if(me.attacking<=0 && attackCooldown<=0 && me.hitstun<=0){
+      me.attacking = ATTACK_TOTAL;
+      attackCooldown = ATTACK_TOTAL + 10;
+      hitThisSwing = false;
+      socket.emit('attack');
+    }
+  }
+  let spaceLatch = false;
+
+  // ---------- Connect flow ----------
+  function connectSocket(){
+    socket = io();
+
+    socket.on('connect', ()=>{ myId = socket.id; });
+
+    socket.on('waiting', ()=>{
+      menuOverlay.classList.add('hidden');
+      waitOverlay.classList.remove('hidden');
+    });
+
+    socket.on('matchFound', (data)=>{
+      waitOverlay.classList.add('hidden');
+      menuOverlay.classList.add('hidden');
+      endOverlay.classList.add('hidden');
+      mySide = data.side;
+      nameP1.textContent = data.side==='p1' ? (data.selfName+' (تو)') : data.opponentName;
+      nameP2.textContent = data.side==='p2' ? (data.selfName+' (تو)') : data.opponentName;
+
+      const mySpawn = SPAWN[mySide];
+      const oppSpawn = mySide==='p1' ? SPAWN.p2 : SPAWN.p1;
+      me.x = mySpawn.x; me.z = mySpawn.z; me.facing = mySide==='p1' ? -1 : 1;
+      opp.x = oppSpawn.x; opp.z = oppSpawn.z; opp.targetX = oppSpawn.x; opp.targetZ = oppSpawn.z;
+      opp.facing = -me.facing; opp.targetFacing = opp.facing;
+
+      myHP = 100; oppHP = 100;
+      hp1El.style.width='100%'; hp2El.style.width='100%';
+      roomActive = true;
+      statusText.textContent = 'در حال نبرد';
+    });
+
+    socket.on('opponentState', (data)=>{
+      opp.targetX = data.x; opp.targetZ = data.z; opp.targetFacing = data.facing;
+      opp.blocking = data.blocking;
+    });
+
+    socket.on('opponentAttack', ()=>{
+      opp.attacking = ATTACK_TOTAL;
+    });
+
+    socket.on('hpUpdate', ({targetId, hp, blocked})=>{
+      if(targetId === myId){
+        myHP = hp;
+        hp1UI();
+      } else {
+        oppHP = hp;
+        hp2UI();
+      }
+    });
+
+    socket.on('roundOver', ({loserId})=>{
+      roomActive = false;
+      const iLost = loserId === myId;
+      endTitle.textContent = iLost ? 'باختی 💀' : 'بردی 🏆';
+      endOverlay.classList.remove('hidden');
+      statusText.textContent = '';
+    });
+
+    socket.on('rematchStart', ()=>{
+      endOverlay.classList.add('hidden');
+      myHP = 100; oppHP = 100;
+      hp1UI(); hp2UI();
+      const mySpawn = SPAWN[mySide];
+      const oppSpawn = mySide==='p1' ? SPAWN.p2 : SPAWN.p1;
+      me.x = mySpawn.x; me.z = mySpawn.z;
+      opp.x = oppSpawn.x; opp.z = oppSpawn.z; opp.targetX = oppSpawn.x; opp.targetZ = oppSpawn.z;
+      roomActive = true;
+      statusText.textContent = 'در حال نبرد';
+    });
+
+    socket.on('opponentLeft', ()=>{
+      roomActive = false;
+      endTitle.textContent = 'حریف خارج شد';
+      endOverlay.classList.remove('hidden');
+    });
+  }
+
+  function hp1UI(){ hp1El.style.width = Math.max(0,myHP)+'%'; }
+  function hp2UI(){ hp2El.style.width = Math.max(0,oppHP)+'%'; }
+
+  findBtn.addEventListener('click', ()=>{
+    if(!socket) connectSocket();
+    const name = nameInput.value.trim() || 'بازیکن';
+    socket.emit('findMatch', { name });
+  });
+  cancelBtn.addEventListener('click', ()=>{
+    if(socket) socket.emit('cancelFind');
+    waitOverlay.classList.add('hidden');
+    menuOverlay.classList.remove('hidden');
+  });
+  rematchBtn.addEventListener('click', ()=>{
+    if(socket) socket.emit('rematch');
+  });
+
+  // ---------- Update loop ----------
+  const ARENA_R = 8.2;
+  let lastSend = 0;
+
+  function updateMe(dt){
+    if(!roomActive) return;
+    if(attackCooldown>0) attackCooldown -= 1;
+    if(me.hitstun>0) me.hitstun -= 1;
+
+    let moveInput = 0;
+    if(me.attacking<=0 && me.hitstun<=0){
+      if(keys['a']||keys['A']||keys['ArrowLeft']||touchState.left) moveInput -= 1;
+      if(keys['d']||keys['D']||keys['ArrowRight']||touchState.right) moveInput += 1;
+    }
+
+    if((keys[' ']||keys['w']||keys['W']||keys['ArrowUp']) && !spaceLatch){ tryAttack(); }
+    spaceLatch = !!(keys[' ']||keys['w']||keys['W']||keys['ArrowUp']);
+
+    me.blocking = me.attacking<=0 && me.hitstun<=0 && (keys['s']||keys['S']||keys['ArrowDown']||touchState.block);
+
+    // move along a circle-ish local x axis relative to facing toward opponent
+    const dirToOpp = new THREE.Vector2(opp.x-me.x, opp.z-me.z).normalize();
+    const side = new THREE.Vector2(-dirToOpp.y, dirToOpp.x); // perpendicular
+    if(me.attacking<=0){
+      me.x += side.x * moveInput * 0.09;
+      me.z += side.y * moveInput * 0.09;
+    }
+    const d = Math.hypot(me.x, me.z);
+    if(d > ARENA_R){ me.x *= ARENA_R/d; me.z *= ARENA_R/d; }
+
+    me.facing = dirToOpp.x >= 0 ? 1 : -1;
+
+    if(me.attacking>0) me.attacking -= 1;
+
+    // send state ~20/s
+    lastSend += dt;
+    if(lastSend > 50 && roomActive){
+      lastSend = 0;
+      socket.emit('state', { x:me.x, z:me.z, facing:me.facing, blocking:me.blocking });
+    }
+
+    // check hit on opponent
+    const framesElapsed = ATTACK_TOTAL - me.attacking;
+    const active = me.attacking>0 && framesElapsed>=ATTACK_WINDUP && framesElapsed<ATTACK_WINDUP+ATTACK_ACTIVE;
+    if(active && !hitThisSwing){
+      const dist = Math.hypot(opp.x-me.x, opp.z-me.z);
+      const facingRight = me.facing===1;
+      const inFront = facingRight ? (opp.x > me.x) : (opp.x < me.x);
+      if(dist < RANGE && inFront){
+        hitThisSwing = true;
+        socket.emit('hit', { damage: 14, blocked: opp.blocking });
+      }
+    }
+    if(me.attacking<=0) hitThisSwing = false;
+  }
+
+  function updateOpp(dt){
+    opp.x += (opp.targetX-opp.x)*0.25;
+    opp.z += (opp.targetZ-opp.z)*0.25;
+    opp.facing = opp.targetFacing;
+    if(opp.attacking>0) opp.attacking -= 1;
+  }
+
+  function applyFighterPose(group, state){
+    group.position.set(state.x, 0, state.z);
+    const yaw = state.facing===1 ? Math.PI/2 : -Math.PI/2;
+    group.rotation.y = yaw;
+
+    const pivot = group.userData.armPivot;
+    let angle;
+    if(state.attacking>0){
+      const prog = (ATTACK_TOTAL-state.attacking)/ATTACK_TOTAL;
+      angle = -1.6 + prog*2.6;
+    } else if(state.blocking){
+      angle = -1.3;
+    } else {
+      angle = -0.3;
+    }
+    pivot.rotation.z = angle;
+
+    const bob = Math.sin(performance.now()*0.006 + (state===me?0:3)) * 0.02;
+    group.userData.torso.position.y = 1.05 + bob;
+  }
+
+  function updateCamera(){
+    const midX = (me.x+opp.x)/2, midZ = (me.z+opp.z)/2;
+    const dist = Math.hypot(me.x-opp.x, me.z-opp.z);
+    const dirToOpp = new THREE.Vector2(opp.x-me.x, opp.z-me.z).normalize();
+    const behind = new THREE.Vector2(-dirToOpp.x, -dirToOpp.y);
+    const camDist = 3.6 + dist*0.35;
+    const targetPos = new THREE.Vector3(
+      me.x + behind.x*camDist*0.55 + (midX-me.x)*0.15,
+      2.4 + dist*0.05,
+      me.z + behind.y*camDist*0.55 + (midZ-me.z)*0.15
+    );
+    camera.position.lerp(targetPos, 0.08);
+    camera.lookAt((me.x+opp.x)/2, 1.2, (me.z+opp.z)/2);
+  }
+
+  let lastTime = 0;
+  function animate(ts){
+    requestAnimationFrame(animate);
+    const dt = lastTime ? ts-lastTime : 16.67;
+    lastTime = ts;
+
+    updateMe(dt);
+    updateOpp(dt);
+    applyFighterPose(meFighter, me);
+    applyFighterPose(oppFighter, opp);
+    updateCamera();
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
